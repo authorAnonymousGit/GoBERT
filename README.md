@@ -26,9 +26,17 @@ to construct a graph neural network. Our paper is under review in [IJCAI'2021](h
 | ------------- | ------------- | ------------- | ------------- | ------------- |
 | [SST-5](https://nlp.stanford.edu/sentiment/code.html)  | 8,544  | 1,101  |  2,210  | 5  | 
 | [SemEval-2017 Task 4-A (English)](https://alt.qcri.org/semeval2017/task4/)  | 12,378  | 4,127  | 4,127  | 3  | 
-| [Amazon](https://nijianmo.github.io/amazon/index.html)  | 9,136  | 3,045  | 3,046  | 5  | 
+| [Amazon (Amazon Fashion)](https://nijianmo.github.io/amazon/index.html)  | 9,136  | 3,045  | 3,046  | 5  | 
 
-The datasets are provided in the [data](./data/) folder. Under this folder, 
+The used datasets are provided in the [data](./data/) folder, 
+divided to train, validation and test.
+We pre-process the original SemEval and Amazon dataset. 
+The whole details are described in the notebook PreProcessDatasets.
+
+Each file contains the following attributes:
+* key_index: identifier.
+* text
+* overall: the correct class out of the possible labels.
 
 
 ## Fine-tuning of the Primary and Helper Models
