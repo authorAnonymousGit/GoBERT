@@ -4,7 +4,7 @@
 ## Introduction
 
 GoBERT is an architecture for ordinal text classification that uses a set of BERT-based models
-to construct a graph neural network. Our paper is under review in [IJCAI'2021](https://ijcai-21.org/).
+to construct a graph neural network. Our paper is under review for [EMNLP'2021](https://2021.emnlp.org/).
 
 ![Go-BERT Framework](GoBERT-framework.jpg)
 
