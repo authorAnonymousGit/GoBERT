@@ -43,11 +43,23 @@ Each file contains the following attributes:
 ## Fine-tuning of the Primary and Helper Models
 
 1. Update the classes ConfigMain, ConfigPrimary and ConfigSubModel (Located in [Config](./config.py) file)
-   with your configuration details.
+   with your configuration details. Please follow the details inside the given file.
 2. Run [run_pipeline.sh](./run_pipeline.sh) to fine-tune the primary and 
    helper models. 
-   To train the primary model solely, run [run_primary.sh](./run_primary.sh).
-   To train the helper models solely, run [run_sub.sh](./run_sub.sh).
+   ```
+   bash run_pipeline.sh ITERATIONS "regular"  
+   ```
+   
+   To train the primary model solely, run [run_primary.sh](./run_primary.sh) as follows:
+   ```
+   bash run_primary.sh ITERATIONS "regular"  
+   ```
+   
+   where ITERATIONS is the number of runs (different seeds).
+   To train the helper models solely, run [run_sub.sh](./run_sub.sh) as follows:
+   ```
+   bash run_sub.sh ITERATIONS "regular"  
+   ```
 
 
 ## Construct Graph of Neural Networks
