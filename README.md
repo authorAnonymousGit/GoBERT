@@ -16,6 +16,7 @@ to construct a graph neural network. Our paper is under review for [EMNLP'2021](
 4. [Transformers (Version 4.2.1)](https://pytorch.org/hub/huggingface_pytorch-transformers/)
 5. [Keras (Version 2.4.3)](https://keras.io/)
 6. [PyTorch Geometric (Version 1.6.3)](https://pytorch-geometric.readthedocs.io/en/latest/#)
+7. (Optional- only if you are interested in running SentiLARE): The same as described in [SentiLARE](https://github.com/thu-coai/SentiLARE).
 
 
 ## Getting Started
