@@ -9,15 +9,15 @@ import numpy as np
 import copy
 
 
-def get_model(model_name, embeddings_path, sub_nn, loss_type):
+def get_model(model_name, embeddings_path, sub_nn, iter_num, loss_type):
     if "FCBERT" in model_name:
         if sub_nn == 'with_flags':
-            return FCBERT_SUB(embeddings_path, labels_num=2)
+            return FCBERT_SUB(embeddings_path, labels_num=2, iter_num=iter_num)
         elif sub_nn == 'regular':
-            return FCBERT_PRIMARY(embeddings_path, labels_num=2, loss_type=loss_type)
+            return FCBERT_PRIMARY(embeddings_path, labels_num=2, iter_num=iter_num, loss_type=loss_type)
         else:
             # with unknown
-            return FCBERT_PRIMARY(embeddings_path, labels_num=3, loss_type=loss_type)
+            return FCBERT_PRIMARY(embeddings_path, labels_num=3, iter_num=iter_num, loss_type=loss_type)
     else:
         raise TypeError("The model " + model_name + " is not defined")
 
@@ -116,10 +116,11 @@ def create_sub_models_dfs(sub_model, train_df, val_df, test_df, text_col, label_
 
 def train_sub_models(task_name, model_name, train_df, val_df, test_df, max_len,
                      text_feature, embeddings_version, embeddings_path, config_subs,
-                     models_path, models_df, label_col, key_col, submodels_list, sub_nn):
+                     models_path, models_df, label_col, key_col, submodels_list, sub_nn, iter_num):
     device = utils.find_device()
     for sub_model in submodels_list:
-        loss_type, _, labels_num, epochs_num, lr, batch_size = \
+        torch.manual_seed(iter_num)
+        loss_type, _, _, labels_num, epochs_num, lr, batch_size, _ = \
             utils.read_config_networks(config_subs, "train_sub")
 
         if sub_model == 'over_under':
@@ -137,7 +138,7 @@ def train_sub_models(task_name, model_name, train_df, val_df, test_df, max_len,
                                                                           max_len, batch_size,
                                                                           label_col, key_col,
                                                                           sub_nn, sub_model)
-        model = get_model(model_name, embeddings_path, sub_nn, loss_type)
+        model = get_model(model_name, embeddings_path, sub_nn, iter_num, loss_type)
 
         model.to(device)
         optimizer = AdamW(model.parameters(), lr=2e-5,  eps=1e-8)

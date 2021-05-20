@@ -24,8 +24,12 @@ def read_config_networks(config, task_type):
     loss_type = config.LOSS_TYPE
     if task_type == 'train_primary':
         alpha = config.ALPHA
+        beta = config.BETA
+        model_selection_procedure = config.MODEL_SELECTION_PROCEDURE
     else:
         alpha = None
+        beta = None
+        model_selection_procedure = None
     labels_num = config.LABELS_NUM
     epochs_num = config.EPOCHS_NUM
     if "train" in task_type:
@@ -41,12 +45,11 @@ def read_config_networks(config, task_type):
     #     batch_size = config.BATCH_SIZE_val
     else:
         raise TypeError("The task " + task_type + " is not defined")
-    return loss_type, alpha, labels_num, epochs_num, lr, batch_size
+    return loss_type, alpha, beta, labels_num, epochs_num, lr, batch_size, model_selection_procedure
 
 
 def read_config_main_for_inference(config):
-    return config.TASK_NAME, config.EMBEDDINGS_VERSION, config.MODELS_PATH, \
-           config.SUB_MODELS, config.INFERENCE_TYPE
+    return config.TASK_NAME, config.EMBEDDINGS_VERSION, config.MODELS_PATH, config.SUB_MODELS
 
 
 def read_config_graph_classification(config):
@@ -57,7 +60,8 @@ def read_config_graph_classification(config):
            config.EPOCHS_NUM, config.BIDIRECTIONAL, \
            config.PRIMARY_MODEL_NAME_BASELINE, \
            config.PRIMARY_MODEL_NAME_GNN, \
-           config.MODEL_SELECTION_PROCEDURE
+           config.MODEL_SELECTION_PROCEDURE, \
+           config.PRIMARY_LOSS_TYPE
 
 
 def read_df(task_name, file_type):
@@ -295,9 +299,10 @@ def create_input_dict(files_path, run_type, sub_models, labels_num, sub_nn, filt
                                                                                            probs,
                                                                                            labels_num))
     df_final = primary_df.copy()
+    sub_models_path = files_path.rsplit("//", 2)[0] + '//'
     for sub_model in sub_models:
         file_name = "predictions_" + run_type + "_" + sub_model + ".csv"
-        tmp_df = pd.read_csv(files_path + file_name)
+        tmp_df = pd.read_csv(sub_models_path + file_name)
         tmp_df = tmp_df[['key_index', 'probability']]
         tmp_df.columns = ['key_index', sub_model]
         tmp_df[sub_model] = tmp_df[sub_model].apply(lambda probs: adjust_probabilities(sub_model,
@@ -318,17 +323,89 @@ def CrossEntropyLoss(outputs, targets):
     return -torch.sum(outputs)/num_examples
 
 
-def CrossEntropyProxLoss(outputs, targets, inv_prox_mat):
-    num_examples = targets.shape[0]
+def CrossEntropyProxLoss(outputs, targets, inv_prox_mat, norm=False):
+    # Method B- CE * 1/prox ; Method C- prox as targets
     batch_size = outputs.shape[0]
     ce_outputs = outputs[range(batch_size), targets]
+    inv_rel_prox = torch.tensor(inv_prox_mat[:, targets]).t()
+    preds = torch.argmax(outputs, axis=1)
+    inv_prox_items = inv_rel_prox[range(batch_size), preds]
+    if norm:
+        prox_items = 1 / inv_rel_prox[range(batch_size), targets]
+    else:
+        prox_items = 1
+    prox_mul = prox_items * inv_prox_items
+    del batch_size, inv_rel_prox, preds
+    loss = -torch.sum(ce_outputs * prox_mul) / batch_size  # Update- prox_mul instead of inv_prox_items
+    del outputs, targets, inv_prox_mat
+    torch.cuda.empty_cache()
+    return loss
+
+
+# def calc_expected_prox(target, pred, dist_dict, denominator, inv=True):
+#     int_pred = int(pred)
+#     residue = pred - int_pred
+#     minlabel, maxlabel = min(int_pred, target), max(int_pred, target)
+#     numerator = dist_dict[int_pred] / 2
+#     if minlabel == int_pred:
+#         for tmp_label in range(minlabel + 1, maxlabel):
+#             numerator += dist_dict[tmp_label]
+#         numerator += dist_dict[maxlabel] * (1 - residue)
+#     else:
+#         for tmp_label in range(maxlabel - 1, minlabel, -1):
+#             numerator += dist_dict[tmp_label]
+#         numerator += dist_dict[minlabel] * (1 - residue)
+#     if inv:
+#         return denominator / numerator
+#     else:
+#         return numerator / denominator
+
+def ExpectationProxLoss(outputs, targets, inv_prox_mat):
+    # outputs = 1 / outputs
+    outputs = outputs**2
+    num_examples = targets.shape[0]
+    inv_rel_prox = torch.tensor(inv_prox_mat[:, targets]).t()
+    loss_val = torch.sum(torch.sum(inv_rel_prox * outputs, dim=1)) / num_examples
+    # prox_rel_items = 1 / inv_rel_prox[range(num_examples), targets]
+    # loss_val = -torch.sum(tmp_loss_val * prox_rel_items) / num_examples
+    # loss_val = torch.sum(tmp_loss_val * prox_rel_items) / num_examples
+    # del outputs, targets, inv_prox_mat, prox_rel_items, tmp_loss_val
+    del outputs, targets, inv_prox_mat
+    torch.cuda.empty_cache()
+    return loss_val
+
+
+def CEProxMSELoss(outputs, targets, inv_prox_mat, se_tensor, delta=0.0, phi=25.0):
+    outputs = 1 / outputs
+    se_tensor = (se_tensor + delta) / phi
+    num_examples = targets.shape[0]
+    inv_rel_prox = torch.tensor(inv_prox_mat[:, targets]).t()
+    se_tensor_rel =  se_tensor[:, targets].t()
+    loss_val = -torch.sum(torch.sum(inv_rel_prox * outputs * se_tensor_rel, dim=1)) / num_examples
+    del outputs, targets, inv_prox_mat
+    torch.cuda.empty_cache()
+    return loss_val
+
+
+def getProxLoss(outputs, targets, inv_prox_mat):
+    num_examples = targets.shape[0]
+    batch_size = outputs.shape[0]
     rel_prox = torch.tensor(inv_prox_mat[:, targets]).t()
     preds = torch.argmax(outputs, axis=1)
     inv_prox_items = rel_prox[range(batch_size), preds]
-
     del outputs, targets, inv_prox_mat, batch_size, rel_prox, preds
     torch.cuda.empty_cache()
-    return -torch.sum(ce_outputs * inv_prox_items)/num_examples
+    return torch.sum(inv_prox_items)/num_examples
+
+
+def MseLoss(outputs, targets, labels_num, device):
+    num_examples = targets.shape[0]
+    labels = torch.tensor(range(1, labels_num + 1)).to(device)
+    expected_preds = torch.sum(outputs * labels, dim=1) - 1
+    mse_by_expected = (expected_preds - targets) ** 2
+    del outputs, targets, labels, expected_preds
+    torch.cuda.empty_cache()
+    return torch.sum(mse_by_expected)/num_examples
 
 
 def MseProxLoss(outputs, targets, inv_prox_mat, labels_num, device):
@@ -344,6 +421,252 @@ def MseProxLoss(outputs, targets, inv_prox_mat, labels_num, device):
     return torch.mean(inv_prox_items * mse_by_expected)
 
 
+def ExpectedMSE(outputs, targets, se_tensor, inv_prox_mat=None):
+    # Returns \frac{1}{batchsize}\sum_{i=1}^{batchsize}\sum_{y=1}^{L} p_y \cdot \left (  y-l_i\right )^2
+    num_examples = targets.shape[0]
+    outputs = 1 / outputs
+    if inv_prox_mat is None:
+        # This is the case of loss function A
+        loss_val = -torch.sum(se_tensor[targets, :] * outputs) / num_examples
+    else:
+        # This is the case of loss function B
+        tmp_loss_val = torch.sum(se_tensor[targets, :] * outputs, dim=1)
+        # TODO: Maybe we will change back to argmax
+        preds = torch.argmin(outputs, axis=1)
+        inv_rel_prox = torch.tensor(inv_prox_mat[:, targets]).t()
+        inv_prox_items = inv_rel_prox[range(num_examples), preds]
+        prox_items = 1 / inv_rel_prox[range(num_examples), targets]
+        prox_mul = prox_items * inv_prox_items
+        loss_val = -torch.sum(tmp_loss_val * prox_mul) / num_examples
+    del outputs, targets, inv_prox_mat
+    torch.cuda.empty_cache()
+    return loss_val
+
+
+def CrossProxLoss(outputs, targets, prox_mat, device):
+    num_examples = targets.shape[0]
+    labels_num = outputs.shape[1]
+    one_hot_target = torch.tensor(np.zeros([num_examples, labels_num])).to(device)
+    one_hot_target[range(num_examples), targets] = 1
+    one_hot_target_comp = 1 - one_hot_target
+    rel_prox = torch.tensor(prox_mat[:, targets]).t()
+    numerator = torch.sum(one_hot_target * outputs, dim=1)
+    denominator = torch.sum((one_hot_target_comp * outputs) * rel_prox, dim=1)
+    loss_val = torch.sum(numerator / denominator) / num_examples
+    del outputs, targets, prox_mat, numerator, denominator, \
+        one_hot_target_comp, one_hot_target, rel_prox
+    torch.cuda.empty_cache()
+    return loss_val
+
+
+def CrossProxLoss2(outputs, targets, inv_prox_mat, prox_mat, device):
+    num_examples = targets.shape[0]
+    labels_num = outputs.shape[1]
+    one_hot_target = torch.tensor(np.zeros([num_examples, labels_num])).to(device)
+    one_hot_target[range(num_examples), targets] = 1
+    one_hot_target_comp = 1 - one_hot_target
+    rel_inv_prox = torch.tensor(inv_prox_mat[:, targets]).t()
+    rel_prox = torch.tensor(prox_mat[:, targets]).t()
+    numerator = torch.sum((one_hot_target * outputs) * (rel_prox**2), dim=1)
+    denominator = torch.sum((one_hot_target_comp * outputs) * rel_inv_prox, dim=1)
+    loss_val = torch.sum(numerator / denominator)
+    del outputs, targets, prox_mat
+    torch.cuda.empty_cache()
+    return loss_val
+
+
+def CrossProxLoss3(outputs, targets, inv_prox_mat, prox_mat, device):
+    num_examples = targets.shape[0]
+    labels_num = outputs.shape[1]
+    one_hot_target = torch.tensor(np.zeros([num_examples, labels_num])).to(device)
+    one_hot_target[range(num_examples), targets] = 1
+    one_hot_target_comp = 1 - one_hot_target
+    rel_inv_prox = torch.tensor(inv_prox_mat[:, targets]).t()
+    rel_prox = torch.tensor(prox_mat[:, targets]).t()
+    numerator = torch.sum((one_hot_target * outputs) * (rel_prox**3), dim=1)
+    denominator = torch.sum((one_hot_target_comp * outputs) * rel_inv_prox, dim=1)
+    loss_val = torch.sum(numerator / denominator)
+    del outputs, targets, prox_mat
+    torch.cuda.empty_cache()
+    return loss_val
+
+
+def CrossProxLoss4(outputs, targets, inv_prox_mat, factor, device):
+    num_examples = targets.shape[0]
+    labels_num = outputs.shape[1]
+    one_hot_target = torch.tensor(np.zeros([num_examples, labels_num])).to(device)
+    one_hot_target[range(num_examples), targets] = 1
+    one_hot_target_comp = 1 - one_hot_target
+    inv_rel_prox = torch.tensor(inv_prox_mat[:, targets]).t()
+    numerator = factor * torch.sum(one_hot_target * outputs, dim=1)
+    denominator = torch.sum((one_hot_target_comp * outputs) * inv_rel_prox, dim=1)
+    loss_val = torch.sum(numerator / denominator) / num_examples
+    del outputs, targets, numerator, denominator, \
+        one_hot_target_comp, one_hot_target, inv_rel_prox
+    torch.cuda.empty_cache()
+    return loss_val
+
+
+def CrossProxLoss5(outputs, targets, prox_mat, device):
+    num_examples = targets.shape[0]
+    labels_num = outputs.shape[1]
+    one_hot_target = torch.tensor(np.zeros([num_examples, labels_num])).to(device)
+    one_hot_target[range(num_examples), targets] = 1
+    one_hot_target_comp = 1 - one_hot_target
+    rel_prox = torch.tensor(prox_mat[:, targets]).t()
+    numerator = torch.sum(one_hot_target * outputs, dim=1)
+    denominator = torch.sum((one_hot_target_comp * outputs) * torch.sqrt(rel_prox), dim=1)
+    loss_val = torch.sum(numerator / denominator) / num_examples
+    del outputs, targets, prox_mat, numerator, denominator, \
+        one_hot_target_comp, one_hot_target, rel_prox
+    torch.cuda.empty_cache()
+    return loss_val
+
+
+def CrossProxLoss6(outputs, targets, inv_prox_mat, device):
+    num_examples = targets.shape[0]
+    labels_num = outputs.shape[1]
+    one_hot_target = torch.tensor(np.zeros([num_examples, labels_num])).to(device)
+    one_hot_target[range(num_examples), targets] = 1
+    one_hot_target_comp = 1 - one_hot_target
+    inv_rel_prox = torch.tensor(inv_prox_mat[:, targets]).t()
+    numerator = torch.sum(one_hot_target * outputs, dim=1)
+    denominator = torch.sum((one_hot_target_comp * outputs) * torch.sqrt(inv_rel_prox), dim=1)
+    loss_val = torch.sum(numerator / denominator) / num_examples
+    del outputs, targets, numerator, denominator, \
+        one_hot_target_comp, one_hot_target, inv_rel_prox
+    torch.cuda.empty_cache()
+    return loss_val
+
+
+def CrossProxLoss7(outputs, targets, prox_mat, device):
+    num_examples = targets.shape[0]
+    labels_num = outputs.shape[1]
+    one_hot_target = torch.tensor(np.zeros([num_examples, labels_num])).to(device)
+    one_hot_target[range(num_examples), targets] = 1
+    one_hot_target_comp = 1 - one_hot_target
+    rel_prox = torch.tensor(prox_mat[:, targets]).t()
+    rel_prox = rel_prox**2
+    numerator = torch.sum(one_hot_target * outputs, dim=1)
+    denominator = torch.sum((one_hot_target_comp * outputs) * rel_prox, dim=1)
+    loss_val = torch.sum(numerator / denominator) / num_examples
+    del outputs, targets, prox_mat, numerator, denominator, \
+        one_hot_target_comp, one_hot_target, rel_prox
+    torch.cuda.empty_cache()
+    return loss_val
+
+
+def CrossProxLoss8(outputs, targets, inv_prox_mat, device):
+    num_examples = targets.shape[0]
+    labels_num = outputs.shape[1]
+    one_hot_target = torch.tensor(np.zeros([num_examples, labels_num])).to(device)
+    one_hot_target[range(num_examples), targets] = 1
+    one_hot_target_comp = 1 - one_hot_target
+    inv_rel_prox = torch.tensor(inv_prox_mat[:, targets]).t()
+    numerator = torch.sum(one_hot_target * outputs, dim=1)
+    denominator = torch.sum((one_hot_target_comp * outputs) * torch.pow(inv_rel_prox, 1/3), dim=1)
+    loss_val = torch.sum(numerator / denominator) / num_examples
+    del outputs, targets, numerator, denominator, \
+        one_hot_target_comp, one_hot_target, inv_rel_prox
+    torch.cuda.empty_cache()
+    return loss_val
+
+
+def CrossProxLoss9(outputs, targets, inv_prox_mat, factor, root, device):
+    num_examples = targets.shape[0]
+    labels_num = outputs.shape[1]
+    one_hot_target = torch.tensor(np.zeros([num_examples, labels_num])).to(device)
+    one_hot_target[range(num_examples), targets] = 1
+    one_hot_target_comp = 1 - one_hot_target
+    inv_rel_prox = torch.tensor(inv_prox_mat[:, targets]).t()
+    numerator = factor * torch.sum(one_hot_target * outputs, dim=1)
+    denominator = torch.sum((one_hot_target_comp * outputs) * torch.pow(inv_rel_prox, 1/root), dim=1)
+    loss_val = torch.sum(numerator / denominator) / num_examples
+    del outputs, targets, numerator, denominator, \
+        one_hot_target_comp, one_hot_target, inv_rel_prox
+    torch.cuda.empty_cache()
+    return loss_val
+
+
+def CrossProxLoss10(outputs, targets, norm_inv_prox_mat, factor, root, device):
+    num_examples = targets.shape[0]
+    labels_num = outputs.shape[1]
+    one_hot_target = torch.tensor(np.zeros([num_examples, labels_num])).to(device)
+    one_hot_target[range(num_examples), targets] = 1
+    one_hot_target_comp = 1 - one_hot_target
+    inv_rel_prox = torch.tensor(norm_inv_prox_mat[:, targets]).t()
+    numerator = factor * torch.sum(one_hot_target * outputs, dim=1)
+    denominator = torch.sum((one_hot_target_comp * outputs) * torch.pow(inv_rel_prox, 1/root), dim=1)
+    loss_val = torch.sum(numerator / denominator) / num_examples
+    del outputs, targets, numerator, denominator, \
+        one_hot_target_comp, one_hot_target, inv_rel_prox
+    torch.cuda.empty_cache()
+    return loss_val
+
+
+def CrossProxLoss11(outputs, targets, se_tensor, device):
+    num_examples = targets.shape[0]
+    labels_num = outputs.shape[1]
+    one_hot_target = torch.tensor(np.zeros([num_examples, labels_num])).to(device)
+    one_hot_target[range(num_examples), targets] = 1
+    one_hot_target_comp = 1 - one_hot_target
+    se_tensor_rel = se_tensor[:, targets].t()
+    numerator = torch.sum(one_hot_target * outputs, dim=1)
+    denominator = torch.sum((one_hot_target_comp * outputs) * se_tensor_rel, dim=1)
+    loss_val = torch.sum(numerator / denominator) / num_examples
+    del outputs, targets, numerator, denominator, \
+        one_hot_target_comp, one_hot_target, se_tensor
+    torch.cuda.empty_cache()
+    return loss_val
+
+
+def CrossProxLoss12(outputs, targets, inv_prox_mat, se_tensor, factor, root, device):
+    num_examples = targets.shape[0]
+    labels_num = outputs.shape[1]
+    one_hot_target = torch.tensor(np.zeros([num_examples, labels_num])).to(device)
+    one_hot_target[range(num_examples), targets] = 1
+    one_hot_target_comp = 1 - one_hot_target
+    inv_rel_prox = torch.tensor(inv_prox_mat[:, targets]).t()
+    se_tensor_rel = se_tensor[:, targets].t()
+    numerator = factor * torch.sum(one_hot_target * outputs, dim=1)
+    denominator = torch.sum((one_hot_target_comp * outputs) *
+                            torch.pow(inv_rel_prox, 1/root) *
+                            se_tensor_rel, dim=1)
+    loss_val = torch.sum(numerator / denominator) / num_examples
+    del outputs, targets, numerator, denominator, \
+        one_hot_target_comp, one_hot_target, se_tensor
+    torch.cuda.empty_cache()
+    return loss_val
+
+
+def CrossProxLoss13(outputs, targets, inv_prox_mat, factor, delta, device):
+    num_examples = targets.shape[0]
+    labels_num = outputs.shape[1]
+    one_hot_target = torch.tensor(np.zeros([num_examples, labels_num])).to(device)
+    one_hot_target[range(num_examples), targets] = 1
+    one_hot_target_comp = 1 - one_hot_target
+    inv_rel_prox = torch.tensor(inv_prox_mat[:, targets]).t()
+    normalized_inv_rel_prox = inv_rel_prox / torch.min(inv_rel_prox).item() + delta
+    numerator = factor * torch.sum(one_hot_target * outputs, dim=1)
+    denominator = torch.sum((one_hot_target_comp * outputs) * torch.log(normalized_inv_rel_prox), dim=1)
+    loss_val = torch.sum(numerator / denominator) / num_examples
+    del outputs, targets, numerator, denominator, \
+        one_hot_target_comp, one_hot_target, inv_rel_prox, \
+        normalized_inv_rel_prox
+    torch.cuda.empty_cache()
+    return loss_val
+
+
+def PProx(outputs, targets, inv_prox_mat):
+    num_examples = targets.shape[0]
+    outputs = outputs ** 2
+    inv_rel_prox = torch.tensor(inv_prox_mat[:, targets]).t()
+    loss_val = torch.sum(torch.sum(inv_rel_prox * outputs, dim=1)) / num_examples
+    del outputs, targets, inv_prox_mat
+    torch.cuda.empty_cache()
+    return loss_val
+
+
 def create_prox_mat(dist_dict, denominator, inv=True):
     labels = dist_dict.keys()
     prox_mat = np.zeros([len(labels), len(labels)])
@@ -351,14 +674,17 @@ def create_prox_mat(dist_dict, denominator, inv=True):
         for label2 in labels:
             minlabel, maxlabel = min(label1, label2), max(label1, label2)
             numerator = dist_dict[label1] / 2
-            between_list = [val for val in range(minlabel, maxlabel + 1) if val != label1]
-            for tmp_label in between_list:
-                numerator += dist_dict[tmp_label]
+            if minlabel == label1:  # Above the diagonal
+                for tmp_label in range(minlabel + 1, maxlabel + 1):
+                    numerator += dist_dict[tmp_label]
+            else:  # Under the diagonal
+                for tmp_label in range(maxlabel - 1, minlabel - 1, -1):
+                    numerator += dist_dict[tmp_label]
             if inv:
                 prox_mat[label1 - 1][label2 - 1] = (-np.log(numerator / denominator))**-1
             else:
                 prox_mat[label1 - 1][label2 - 1] = -np.log(numerator / denominator)
-    return prox_mat
+    return torch.tensor(prox_mat)
 
 
 def get_prox_params(models_path, dataset_type, model_name):
@@ -368,8 +694,137 @@ def get_prox_params(models_path, dataset_type, model_name):
     return dist_dict, denominator
 
 
-def compute_inv_prox_mse_loss(inv_prox_mat, label, label_encoding, prediction):
-    mse = (label_encoding - prediction) ** 2
-    rel_prox = torch.tensor(inv_prox_mat[:, label]).t()
-    return torch.mean(torch.sum(mse * rel_prox, 1))
+def get_loss(loss_type, lsm, softmax_values, ground_truth, device,
+             alpha, beta, inv_prox_mat, norm_inv_prox_mat,
+             labels_num, dist_dict, se_tensor):
+    if loss_type == 'CrossEntropy':
+        loss_val = CrossEntropyLoss(lsm, ground_truth.to(device))
+    else:  # Ordinal loss
+        # loss1, loss2, loss3 = 0.0, 0.0, 0.0
+        if loss_type == 'OrdinalTextClassification-A':
+            loss1 = CrossEntropyLoss(lsm, ground_truth.to(device))
+            # loss2 = MseLoss(softmax_values, ground_truth.to(device), labels_num, device)
+            loss2 = ExpectedMSE(lsm, ground_truth.to(device), se_tensor.to(device))
+            loss3 = getProxLoss(lsm, ground_truth.to(device), inv_prox_mat)
+        # elif loss_type == 'OrdinalTextClassification-B':
+        #     loss1 = CrossEntropyProxLoss(lsm, ground_truth.to(device), inv_prox_mat)
+        #     # loss2 = MseProxLoss(softmax_values, ground_truth.to(device),
+        #     #                     inv_prox_mat, labels_num, device)
+        #     loss2 = ExpectedMSE(lsm, ground_truth.to(device),
+        #                         se_tensor.to(device), inv_prox_mat)
+        # elif loss_type == 'OrdinalTextClassification-C':
+        #     loss1 = CrossEntropyProxLoss(lsm, ground_truth.to(device), inv_prox_mat)
+        #     loss2 = ExpectationProxLoss(lsm, ground_truth.to(device), inv_prox_mat)
+        # elif loss_type == 'OrdinalTextClassification-D':
+        #     loss1 = CrossEntropyLoss(lsm, ground_truth.to(device))
+        #     loss2 = ExpectationProxLoss(lsm, ground_truth.to(device), inv_prox_mat)
+        # elif loss_type == 'OrdinalTextClassification-E':
+        #     loss1 = CrossEntropyLoss(lsm, ground_truth.to(device))
+        #     loss2 = ExpectationProxLoss(lsm, ground_truth.to(device), inv_prox_mat)
+        #     loss_val = loss1 * loss2
+        #     del loss1,
+        #     return loss_val
+        # elif loss_type == 'OrdinalTextClassification-F':
+        #     # loss1 = CrossEntropyLoss(lsm, ground_truth.to(device))
+        #     # loss2 = getProxLoss(lsm, ground_truth.to(device), inv_prox_mat)
+        #     # loss_val = loss1 * loss2
+        #     # return loss_val
+        #     return CrossEntropyProxLoss(lsm, ground_truth.to(device), inv_prox_mat, norm=True)
+        # elif loss_type == 'OrdinalTextClassification-G':
+        #     return CrossEntropyProxLoss(lsm, ground_truth.to(device), inv_prox_mat)
+        # elif loss_type == 'OrdinalTextClassification-H':
+        #     return ExpectationProxLoss(softmax_values, ground_truth.to(device), inv_prox_mat)
+        # elif loss_type == 'OrdinalTextClassification-I':
+        #     loss1 = CrossEntropyLoss(lsm, ground_truth.to(device))
+        #     loss2 = CrossEntropyProxLoss(lsm, ground_truth.to(device), inv_prox_mat)
+        #     loss_val = alpha * loss1 + (1 - alpha) * loss2
+        #     return loss_val
+        # elif loss_type == 'OrdinalTextClassification-J':
+        #     loss1 = ExpectedMSE(lsm, ground_truth.to(device), se_tensor.to(device))
+        #     loss2 = CrossEntropyProxLoss(lsm, ground_truth.to(device), inv_prox_mat)
+        #     loss_val = alpha * loss1 + (1 - alpha) * loss2
+        #     return loss_val
+        # elif loss_type == 'OrdinalTextClassification-K':
+        #     loss_val = CrossProxLoss(lsm, ground_truth.to(device), 1 / inv_prox_mat, device)
+        #     return loss_val
+        # elif loss_type == 'OrdinalTextClassification-L':
+        #     loss_val = CrossProxLoss2(lsm, ground_truth.to(device), inv_prox_mat, 1 / inv_prox_mat, device)
+        #     return loss_val
+        # elif loss_type == 'OrdinalTextClassification-M':
+        #     loss_val = CrossProxLoss3(lsm, ground_truth.to(device), inv_prox_mat, 1 / inv_prox_mat, device)
+        #     return loss_val
+        # elif loss_type == 'OrdinalTextClassification-N':
+        #     loss_val = CrossProxLoss4(lsm, ground_truth.to(device), inv_prox_mat, 25, device)
+        #     return loss_val
+        # elif loss_type == 'OrdinalTextClassification-O':
+        #     loss_val = CrossProxLoss5(lsm, ground_truth.to(device), 1 / inv_prox_mat, device)
+        #     return loss_val
+        # elif loss_type == 'OrdinalTextClassification-P':
+        #     loss_val = CrossProxLoss6(lsm, ground_truth.to(device), inv_prox_mat, device)
+        #     return loss_val
+        # elif loss_type == 'OrdinalTextClassification-Q':
+        #     loss_val = CrossProxLoss7(lsm, ground_truth.to(device), 1 / inv_prox_mat, device)
+        #     return loss_val
+        elif loss_type == 'OrdinalTextClassification-R':
+            loss_val = CrossProxLoss8(lsm, ground_truth.to(device), 1 / inv_prox_mat, device)
+            return loss_val
+        elif loss_type == 'OrdinalTextClassification-S':
+            loss_val = CrossProxLoss9(lsm, ground_truth.to(device), inv_prox_mat, 1, 4, device)
+            return loss_val
+        elif loss_type == 'OrdinalTextClassification-T':
+            loss_val = CrossProxLoss9(lsm, ground_truth.to(device), inv_prox_mat, labels_num**2, 4, device)
+            return loss_val
+        elif loss_type == 'OrdinalTextClassification-U':
+            loss_val = CrossProxLoss11(lsm, ground_truth.to(device), se_tensor.to(device), device)
+            return loss_val
+        elif loss_type == 'OrdinalTextClassification-V':
+            return CrossProxLoss12(lsm, ground_truth.to(device), inv_prox_mat,
+                                   se_tensor.to(device), labels_num**2, 4, device)
+        # elif loss_type == 'OrdinalTextClassification-W':
+        #     return CrossProxLoss13(lsm, ground_truth.to(device), inv_prox_mat, 1, 0.1, device)
+        # elif loss_type == 'OrdinalTextClassification-X':
+        #     return CrossProxLoss13(lsm, ground_truth.to(device), inv_prox_mat, 1, 1, device)
+        # elif loss_type == 'OrdinalTextClassification-Y':
+        #     return CrossProxLoss13(lsm, ground_truth.to(device), inv_prox_mat, labels_num**2, 0.1, device)
+        # elif loss_type == 'OrdinalTextClassification-Z':
+        #     return CrossProxLoss13(lsm, ground_truth.to(device), inv_prox_mat, labels_num**2, 1, device)
+
+        elif loss_type == 'OrdinalTextClassification-W':
+            return CrossProxLoss9(lsm, ground_truth.to(device), inv_prox_mat, labels_num, 4, device)
+        elif loss_type == 'OrdinalTextClassification-X':
+            return CrossProxLoss9(lsm, ground_truth.to(device), inv_prox_mat, labels_num, 5, device)
+        elif loss_type == 'OrdinalTextClassification-Y':
+            return CrossProxLoss9(lsm, ground_truth.to(device), inv_prox_mat, labels_num**2, 4, device)
+        elif loss_type == 'OrdinalTextClassification-Z':
+            return CrossProxLoss9(lsm, ground_truth.to(device), inv_prox_mat, labels_num**2, 5, device)
+        elif loss_type == 'OrdinalTextClassification-B':
+            return CrossProxLoss10(lsm, ground_truth.to(device), norm_inv_prox_mat, labels_num, 2, device)
+        elif loss_type == 'OrdinalTextClassification-C':
+            return CrossProxLoss10(lsm, ground_truth.to(device), norm_inv_prox_mat, labels_num, 4, device)
+        elif loss_type == 'OrdinalTextClassification-D':
+            return CrossProxLoss10(lsm, ground_truth.to(device), norm_inv_prox_mat, labels_num**2, 2, device)
+        elif loss_type == 'OrdinalTextClassification-E':
+            return CrossProxLoss10(lsm, ground_truth.to(device), norm_inv_prox_mat, labels_num**2, 4, device)
+        elif loss_type == 'OrdinalTextClassification-F':
+            return CrossProxLoss10(lsm, ground_truth.to(device), norm_inv_prox_mat, labels_num**2, labels_num - 1, device)
+        elif loss_type == 'OrdinalTextClassification-G':
+            return CrossProxLoss10(lsm, ground_truth.to(device), norm_inv_prox_mat, labels_num**2, labels_num - 2, device)
+        elif loss_type == 'OrdinalTextClassification-H':
+            return CrossProxLoss10(lsm, ground_truth.to(device), norm_inv_prox_mat, labels_num, labels_num + 2, device)
+        elif loss_type == 'OrdinalTextClassification-I':
+            return CrossProxLoss10(lsm, ground_truth.to(device), norm_inv_prox_mat, labels_num, labels_num + 1, device)
+        elif loss_type == 'OrdinalTextClassification-J':
+            return CrossProxLoss10(lsm, ground_truth.to(device), norm_inv_prox_mat, labels_num, labels_num, device)
+        elif loss_type == 'OrdinalTextClassification-K':
+            return CrossProxLoss10(lsm, ground_truth.to(device), norm_inv_prox_mat, labels_num**2, labels_num + 2, device)
+        '''
+        if beta is not None:
+            loss_val = alpha * loss1 + beta * loss2 + (1 - alpha - beta) * loss3
+        else:
+            loss_val = alpha * loss1 + (1 - alpha) * loss2
+        del loss1, loss2
+        '''
+    return loss_val
+
+
 

@@ -26,13 +26,13 @@ def run_task(config, config_primary, config_subs, models_df, iter_num, task_type
         models_df = primary_networks.run_primary(task_name, model_name, train_df, val_df, test_df,
                                                  max_len, text_col, embeddings_version,
                                                  embeddings_path, config_primary, models_path, models_df,
-                                                 label_col, key_col)
+                                                 label_col, key_col, iter_num)
         models_df.to_csv(models_path + 'models_df.csv')
     elif task_type == "train_sub":
         models_df = sub_networks.train_sub_models(task_name, model_name, train_df, val_df, test_df, max_len,
                                                   text_col, embeddings_version, embeddings_path,
                                                   config_subs, models_path, models_df, label_col,
-                                                  key_col, submodels_list, sub_nn)
+                                                  key_col, submodels_list, sub_nn, iter_num)
         models_df.to_csv(models_path + 'models_df.csv')
 
 

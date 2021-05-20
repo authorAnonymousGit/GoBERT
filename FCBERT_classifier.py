@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as Func
 from transformers import BertModel, RobertaModel, AlbertModel
-from utils import CrossEntropyLoss, CrossEntropyProxLoss, MseProxLoss, create_prox_mat
+from utils import CrossEntropyLoss, CrossEntropyProxLoss, MseProxLoss, create_prox_mat, getProxLoss, get_loss
 
 
 def get_model(embeddings_path):
@@ -15,10 +15,11 @@ def get_model(embeddings_path):
 
 
 class FCBERT_PRIMARY(nn.Module):
-    def __init__(self, embeddings_path, labels_num, loss_type='CrossEntropy',
-                 dist_dict=None, denominator=None, alpha=None):
+    def __init__(self, embeddings_path, labels_num, iter_num,
+                 loss_type='CrossEntropy', dist_dict=None,
+                 denominator=None, alpha=None, beta=None):
         super(FCBERT_PRIMARY, self).__init__()
-        torch.manual_seed(2345)  # torch.manual_seed(12345)
+        torch.manual_seed(iter_num)
         self.embeddings_path = embeddings_path
         self.model = get_model(embeddings_path)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -26,9 +27,14 @@ class FCBERT_PRIMARY(nn.Module):
         self.logsoftmax = nn.LogSoftmax(dim=1)
         self.loss_type = loss_type
         self.labels_num = labels_num
-        if self.loss_type == 'OrdinalTextClassification':
-            self.inv_prox_mat = torch.tensor(create_prox_mat(dist_dict, denominator, inv=True)).to(self.device)
-            self.alpha = alpha
+        self.dist_dict = dist_dict
+        self.inv_prox_mat = torch.tensor(create_prox_mat(dist_dict, denominator, inv=True)).to(self.device) \
+            if dist_dict is not None else None
+        self.norm_inv_prox_mat = self.inv_prox_mat / torch.min(self.inv_prox_mat) if dist_dict is not None else None
+        self.se_tensor = torch.tensor([[(i - true_label)**2 for i in range(labels_num)]
+                                       for true_label in range(labels_num)])
+        self.alpha = alpha
+        self.beta = beta
 
     def forward(self, input_ids, attention_mask, ground_truth):
         pooler = self.model(input_ids=input_ids, attention_mask=attention_mask)[1]
@@ -38,42 +44,39 @@ class FCBERT_PRIMARY(nn.Module):
         _, predictions = softmax_values.max(1)
         if lsm.shape[0] > input_ids.shape[0]:
             lsm = lsm[:input_ids.shape[0]]
-        if self.loss_type == 'CrossEntropy':
-            loss_val = CrossEntropyLoss(lsm, ground_truth.to(self.device))
-        else:
-            loss1 = CrossEntropyProxLoss(lsm, ground_truth.to(self.device), self.inv_prox_mat)
-            loss2 = MseProxLoss(softmax_values, ground_truth.to(self.device),
-                                self.inv_prox_mat, self.labels_num, self.device)
-            loss_val = self.alpha * loss1 + (1 - self.alpha) * loss2
-            del loss1, loss2
+        loss_val = get_loss(self.loss_type, lsm, softmax_values, ground_truth,
+                            self.device, self.alpha, self.beta, self.inv_prox_mat,
+                            self.norm_inv_prox_mat, self.labels_num, self.dist_dict,
+                            self.se_tensor)
         del input_ids, attention_mask, pooler, Y1, lsm
         torch.cuda.empty_cache()
         return loss_val, predictions, softmax_values
 
-#
-# class FCBERT_REGRESSION(nn.Module):
-#     def __init__(self, embeddings_path, labels_num):
-#         super(FCBERT_REGRESSION, self).__init__()
-#         torch.manual_seed(2345)  # torch.manual_seed(12345)
-#         self.model = get_model(embeddings_path)
-#         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#         self.linear_pred = nn.Linear(self.model.config.hidden_size, 1)
-#         self.logsoftmax = nn.LogSoftmax(dim=1)
-#         self.labels_num = labels_num
-#
-#     def forward(self, input_ids, attention_mask, ground_truth):
-#         pooler = self.model(input_ids=input_ids, attention_mask=attention_mask)[1]
-#         predictions = self.linear_pred(pooler)
-#         loss_val = torch.mean((predictions - ground_truth) ** 2)
-#         rounded_preds = torch.tensor([round(pred.item()) for pred in predictions]).to(self.device)
-#         del input_ids, attention_mask, pooler
-#         torch.cuda.empty_cache()
-#         return loss_val, rounded_preds, torch.zeros((len(rounded_preds), self.labels_num))
+
+class FCBERT_REGRESSION(nn.Module):
+    def __init__(self, embeddings_path, labels_num, iter_num):
+        super(FCBERT_REGRESSION, self).__init__()
+        torch.manual_seed(iter_num)  # torch.manual_seed(12345)
+        self.model = get_model(embeddings_path)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.linear_pred = nn.Linear(self.model.config.hidden_size, 1)
+        self.logsoftmax = nn.LogSoftmax(dim=1)
+        self.labels_num = labels_num
+
+    def forward(self, input_ids, attention_mask, ground_truth):
+        pooler = self.model(input_ids=input_ids, attention_mask=attention_mask)[1]
+        predictions = self.linear_pred(pooler)
+        loss_val = torch.mean((predictions - ground_truth) ** 2)
+        rounded_preds = torch.tensor([round(pred.item()) for pred in predictions]).to(self.device)
+        del input_ids, attention_mask, pooler
+        torch.cuda.empty_cache()
+        return loss_val, rounded_preds, torch.zeros((len(rounded_preds), self.labels_num))
 
 
 class FCBERT_SUB(nn.Module):
-    def __init__(self, embeddings_path, labels_num):
+    def __init__(self, embeddings_path, labels_num, iter_num):
         super(FCBERT_SUB, self).__init__()
+        torch.manual_seed(iter_num)  # torch.manual_seed(12345)
         self.model = BertModel.from_pretrained(embeddings_path)
         self.loss_dist = nn.MSELoss()
         self.loss_flag = nn.NLLLoss()
