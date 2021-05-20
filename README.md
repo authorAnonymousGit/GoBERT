@@ -77,5 +77,13 @@ Each file contains the following attributes:
 
 1. Update the classes ConfigMain and ConfigGraphClassification (Located in [Config](./config.py) file)
    with your configuration details.
-2. Run the file [test_inference.py](./test_inference.py) to train a graph of neural networks
-   and perform inference.
+2. Run the file [test_inference.py](./test_inference.py) to train a graph of neural networks and perform inference:
+   ```
+   python test_inference.py --iters_num
+   ```
+   
+ The results of this stage are saved in the following directory:
+ ```
+ GNN_results/<dataset>/<BERT_version>/regular/seed/<selection_procedure>/...
+ ```
+ where <selection_procedure> is defined in ConfigGraphClassification (config.py).
