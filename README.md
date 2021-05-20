@@ -66,10 +66,14 @@ Each file contains the following attributes:
   trained_models/<dataset>/<BERT_version>/regular/seed/
   ```
   where <dataset> and <BERT_version> are defined according to ConfigMain (config.py).
+  
+   
    
 
 
 ## Construct Graph of Neural Networks
+   
+0. In order to use the trained models in the "Graph of Neural Networks" stage, remove the suffix "_alpha_0" from the csv files of the desired models (for example change    "predictions_validation_primary_OrdinalTextClassification-H_alpha_0.csv" to "predictions_validation_primary_OrdinalTextClassification-H.csv".
 
 1. Update the classes ConfigMain and ConfigGraphClassification (Located in [Config](./config.py) file)
    with your configuration details.
