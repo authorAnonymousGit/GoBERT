@@ -61,8 +61,11 @@ Each file contains the following attributes:
    
    where ITERATIONS is the number of runs (different seeds).
    
-  The trained models and predictions documentation are saved in the following directory: 
-         "trained_models/<dataset>/<BERT_version>/regular/seed/" where <dataset> and <BERT_version> are defined according to ConfigMain (config.py).
+  The trained models and predictions documentation are saved in the following directory:
+  ```
+  trained_models/<dataset>/<BERT_version>/regular/seed/
+  ```
+  where <dataset> and <BERT_version> are defined according to ConfigMain (config.py).
    
 
 
